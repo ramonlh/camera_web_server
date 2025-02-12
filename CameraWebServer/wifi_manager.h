@@ -26,7 +26,7 @@ void checkButton(){
     // poor mans debounce/press-hold, code not ideal for production
     delay(50);
     if( digitalRead(WIFI_TRIGGER_PIN) == LOW ){
-      Serial.println("Button Pressed");
+      Serial.println("Boton presionado");
       // still holding button for 3000 ms, reset settings, code not ideaa for production
       delay(3000); // reset delay hold
       if( digitalRead(WIFI_TRIGGER_PIN) == LOW ){
@@ -38,7 +38,7 @@ void checkButton(){
       
       // start portal w delay
       Serial.println("Iniciando portal configuración");
-      wm.setConfigPortalTimeout(120);
+      wm.setConfigPortalTimeout(120);   // después de 120 seg. se cierra el portal autoconfig
       
       if (!wm.startConfigPortal("OnDemandAP","password")) {
         Serial.println("No se pudo conectar");
@@ -71,13 +71,13 @@ void init_wifi_manager()
   wm.setClass("invert");
   //set static ip
   wm.setSTAStaticIPConfig(WIFI_IP, WIFI_GW, WIFI_MASK); // set static ip,gw,sn
-//  wm.setSTAStaticIPConfig(IPAddress(192,168,1,91), IPAddress(192,168,1,1), IPAddress(255,255,255,0)); // set static ip,gw,sn
   wm.setShowStaticFields(true); // force show static ip fields
   wm.setShowDnsFields(true);    // force show dns field always
 
   wm.setConfigPortalTimeout(120); // auto close configportal after n seconds
   bool res;  
-  res = wm.autoConnect("AutoConnectAP"); // anonymous ap
+  res = wm.autoConnect(); // auto generated AP name from chipid ESPxxxxx
+  //res = wm.autoConnect("AutoConnectAP"); // anonymous ap
   //res = wm.autoConnect("AutoConnectAP","password"); // password protected ap
   if(!res) {
     Serial.println("No se pudo conectar");

@@ -115,17 +115,13 @@ void setup() {
   setupLedFlash(LED_GPIO_NUM);
 #endif
 
-  WiFi.begin(ssid, password);
   WiFi.setSleep(false);
-
   init_wifi_manager();
 
   startCameraServer();
-
   Serial.print("Camera Ready!    Use 'http://");
   Serial.print(WiFi.localIP());
   Serial.println("' to connect");
-
   if (psramFound()) {
     Serial.println("PSRAM está habilitado y disponible.");
   } else {
