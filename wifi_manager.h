@@ -70,7 +70,11 @@ void init_wifi_manager()
 
   wm.setClass("invert");
   //set static ip
-  wm.setSTAStaticIPConfig(WIFI_IP, WIFI_GW, WIFI_MASK); // set static ip,gw,sn
+  IPAddress ip(192, 168, 4, 2);  // DNS de Google (puedes usar otro)
+  IPAddress gw(192, 168, 4, 1);  // DNS de Google (puedes usar otro)
+  IPAddress dns(8, 8, 8, 8);  // DNS de Google (puedes usar otro)
+  IPAddress subnet(255, 255, 255, 0);  // DNS de Google (puedes usar otro)
+  wm.setSTAStaticIPConfig(ip, gw, subnet); // set static ip,gw,sn
   wm.setShowStaticFields(true); // force show static ip fields
   wm.setShowDnsFields(true);    // force show dns field always
 

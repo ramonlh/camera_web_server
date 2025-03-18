@@ -3,10 +3,9 @@
 #include <HTTPClient.h>
 
 #define WIFI_TRIGGER_PIN 0    // gpio para reset WiFi y acceder al menu WifiManager
-const IPAddress WIFI_IP(192,168,11,92);
-const IPAddress WIFI_GW(192,168,11,1);
-const IPAddress WIFI_MASK(255,255,255,0);
-const char* serverIP = "http://192.168.11.92/update_ip";  // Cambia por la IP del ESP32 fijo
+//const IPAddress WIFI_IP(192,168,4,2);
+//const IPAddress WIFI_GW(192,168,4,1);
+//const IPAddress WIFI_MASK(255,255,255,0);
 
 unsigned long lastSendTime = 0;
 const unsigned long sendInterval = 10000;  // 1 minuto
@@ -32,9 +31,7 @@ void startCameraServer();
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-  Serial.println("iniciando 1");
-  //Serial.setDebugOutput(true);
+  delay(5000);      // esperar a que se active el Access Point del Rover
   Serial.println("iniciando");
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -138,12 +135,14 @@ void setup() {
   }  
 
   // Configura el servidor DNS después de la conexión. Necesario si se usa la librería WiFi_Manager
+  IPAddress ip(192, 168, 4, 2);  // DNS de Google (puedes usar otro)
+  IPAddress gw(192, 168, 4, 1);  // DNS de Google (puedes usar otro)
   IPAddress dns(8, 8, 8, 8);  // DNS de Google (puedes usar otro)
   IPAddress subnet(255, 255, 255, 0);  // DNS de Google (puedes usar otro)
-  WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), subnet, dns);  // Establece subnet y DNS  
+  WiFi.config(ip, gw, subnet, dns);  // Establece subnet y DNS  
 
-  init_manageips();
-  send_and_get_ips();
+  //init_manageips();
+  //send_and_get_ips();
 
 }
 
