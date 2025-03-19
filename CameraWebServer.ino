@@ -1,18 +1,5 @@
 #include "esp_camera.h"
 #include <WiFi.h>
-#include <HTTPClient.h>
-
-#define WIFI_TRIGGER_PIN 0    // gpio para reset WiFi y acceder al menu WifiManager
-//const IPAddress WIFI_IP(192,168,4,2);
-//const IPAddress WIFI_GW(192,168,4,1);
-//const IPAddress WIFI_MASK(255,255,255,0);
-
-unsigned long lastSendTime = 0;
-const unsigned long sendInterval = 10000;  // 1 minuto
-char other_ip[16]; // 
-
-#include "wifi_manager.h"
-#include "manage_ips.h"
 
 //
 // WARNING!!! PSRAM IC required for UXGA resolution and high JPEG quality
@@ -26,6 +13,9 @@ char other_ip[16]; //
 // Select camera model
 #define CAMERA_MODEL_ESP32S3_EYE // Has PSRAM
 #include "camera_pins.h"
+
+const char *ssid = "ROVER_DIEGO";
+const char *password = "18921892";  
 
 void startCameraServer();
 
@@ -120,10 +110,6 @@ void setup() {
   setupLedFlash(LED_GPIO_NUM);
 #endif
 
-  // WiFi
-  WiFi.setSleep(false);
-  init_wifi_manager();
-
   startCameraServer();
   Serial.print("Camera Ready!    Use 'http://");
   Serial.print(WiFi.localIP());
@@ -134,6 +120,18 @@ void setup() {
     Serial.println("PSRAM NO está disponible.");
   }  
 
+  // WiFi
+  WiFi.setSleep(false);
+    // modo STA
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    }
+  Serial.println("");
+  Serial.print("WiFi conectado");     Serial.print("IP : ");
+  Serial.println(WiFi.localIP());
+  
   // Configura el servidor DNS después de la conexión. Necesario si se usa la librería WiFi_Manager
   IPAddress ip(192, 168, 4, 2);  // DNS de Google (puedes usar otro)
   IPAddress gw(192, 168, 4, 1);  // DNS de Google (puedes usar otro)
@@ -150,7 +148,5 @@ void loop() {
   delay(1);
   //return;
   // Do nothing. Everything is done in another task by the web server
-  wifimanager_loop();
-  manage_ips_loop(); 
 }
 
