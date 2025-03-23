@@ -1,28 +1,32 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 
-//
 // WARNING!!! PSRAM IC required for UXGA resolution and high JPEG quality
 //            Ensure ESP32 Wrover Module or other board with PSRAM is selected
 //            Partial images will be transmitted if image exceeds buffer size
-//
 //            You must select partition scheme from the board menu that has at least 3MB APP space.
 //            Face Recognition is DISABLED for ESP32 and ESP32-S2, because it takes up from 15
 //            seconds to process single frame. Face Detection is ENABLED if PSRAM is enabled as well
 
-// Select camera model
-#define CAMERA_MODEL_ESP32S3_EYE // Has PSRAM
+#define CAMERA_MODEL_AI_THINKER // Has PSRAM
 #include "camera_pins.h"
 
 const char *ssid = "ROVER_DIEGO";
-const char *password = "18921892";  
+const char *password = "12341234";
+IPAddress local_IP(192, 168, 4, 2); // IP deseada (ajústala según tu red)
+IPAddress gateway(192, 168, 4, 1);    // Gateway (normalmente el router)
+IPAddress subnet(255, 255, 255, 0);   // Máscara de subred
+IPAddress primaryDNS(8, 8, 8, 8);     // DNS primario (opcional)
+IPAddress secondaryDNS(8, 8, 4, 4);   // DNS secundario (opcional)
 
 void startCameraServer();
+void setupLedFlash(int pin);
 
 void setup() {
   Serial.begin(115200);
-  delay(5000);      // esperar a que se active el Access Point del Rover
-  Serial.println("iniciando");
+  Serial.setDebugOutput(true);
+  Serial.println("Inicio");
+  
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -43,8 +47,9 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 10000000;
+//  config.xclk_freq_hz = 20000000;
   config.frame_size = FRAMESIZE_VGA;
-//  config.frame_size = FRAMESIZE_UXGA;   // opcion orginal
+//  config.frame_size = FRAMESIZE_UXGA;
   config.pixel_format = PIXFORMAT_JPEG;  // for streaming
   //config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
@@ -82,8 +87,9 @@ void setup() {
   if (err != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x", err);
     return;
-  }
-
+    }
+  else
+    Serial.println("Camera OK");
   sensor_t *s = esp_camera_sensor_get();
   // initial sensors are flipped vertically and colors are a bit saturated
   if (s->id.PID == OV3660_PID) {
@@ -109,44 +115,28 @@ void setup() {
 #if defined(LED_GPIO_NUM)
   setupLedFlash(LED_GPIO_NUM);
 #endif
-
-  startCameraServer();
-  Serial.print("Camera Ready!    Use 'http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("' to connect");
-  if (psramFound()) {
-    Serial.println("PSRAM está habilitado y disponible.");
-  } else {
-    Serial.println("PSRAM NO está disponible.");
-  }  
-
-  // WiFi
-  WiFi.setSleep(false);
-    // modo STA
+  // Configurar IP estática antes de conectar
+  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
+    Serial.println("⚠️ Error al configurar la IP estática");
+    }
   WiFi.begin(ssid, password);
+  WiFi.setSleep(false);
+  Serial.print("WiFi connecting");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
-    }
+  }
   Serial.println("");
-  Serial.print("WiFi conectado");     Serial.print("IP : ");
-  Serial.println(WiFi.localIP());
-  
-  // Configura el servidor DNS después de la conexión. Necesario si se usa la librería WiFi_Manager
-  IPAddress ip(192, 168, 4, 2);  // DNS de Google (puedes usar otro)
-  IPAddress gw(192, 168, 4, 1);  // DNS de Google (puedes usar otro)
-  IPAddress dns(8, 8, 8, 8);  // DNS de Google (puedes usar otro)
-  IPAddress subnet(255, 255, 255, 0);  // DNS de Google (puedes usar otro)
-  WiFi.config(ip, gw, subnet, dns);  // Establece subnet y DNS  
+  Serial.println("WiFi connected");
 
-  //init_manageips();
-  //send_and_get_ips();
+  startCameraServer();
 
+  Serial.print("Camera Ready! Use 'http://");
+  Serial.print(WiFi.localIP());
+  Serial.println("' to connect");
 }
 
 void loop() {
-  delay(1);
-  //return;
   // Do nothing. Everything is done in another task by the web server
+  delay(1);
 }
-
