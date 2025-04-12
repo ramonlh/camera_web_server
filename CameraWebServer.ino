@@ -119,6 +119,8 @@ void setup() {
   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
     Serial.println("⚠️ Error al configurar la IP estática");
     }
+  // esperar  10 segundos para asegurar que el AP del Rover se ponga en marcha
+  delay(10000);
   WiFi.begin(ssid, password);
   WiFi.setSleep(false);
   Serial.print("WiFi connecting");
