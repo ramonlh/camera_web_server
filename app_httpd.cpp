@@ -19,6 +19,10 @@
 #include "esp32-hal-ledc.h"
 #include "sdkconfig.h"
 #include "camera_index.h"
+#include <Arduino.h>
+#include <pgmspace.h>
+#include <string.h>
+#include <WiFi.h>
 
 #if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
 #include "esp32-hal-log.h"
@@ -37,6 +41,14 @@ int led_duty = 0;
 bool isStreaming = false;
 
 #endif
+
+extern char wifi_ssid[33];
+extern char wifi_pass[65];
+
+extern bool wifi_sta_ok;
+extern bool wifi_ap_ok;
+
+void saveWiFiConfig(const String& s, const String& p);
 
 typedef struct {
   httpd_req_t *req;
@@ -281,6 +293,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     int64_t fr_end = esp_timer_get_time();
 
     int64_t frame_time = fr_end - last_frame;
+    last_frame = fr_end;
     frame_time /= 1000;
 #if ARDUHAL_LOG_LEVEL >= ARDUHAL_LOG_LEVEL_INFO
     uint32_t avg_frame_time = ra_filter_run(&ra_filter, frame_time);
@@ -650,6 +663,153 @@ static esp_err_t win_handler(httpd_req_t *req) {
   return httpd_resp_send(req, NULL, 0);
 }
 
+static const char SETUP_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Configuración cámara</title>
+<style>
+body{font-family:Arial,sans-serif;text-align:center;padding:20px;background:#f5f5f5;margin:0}
+.card{max-width:520px;margin:0 auto;background:#fff;padding:20px;border-radius:10px;border:1px solid #ddd;box-sizing:border-box}
+.row{margin:12px 0;text-align:left}
+label{display:block;margin-bottom:6px;font-weight:bold}
+input,button{width:100%;padding:10px;font-size:16px;box-sizing:border-box;border-radius:6px}
+input{border:1px solid #ccc}
+button{margin-top:10px;background:#3498db;color:#fff;border:none}
+button:hover{background:#2980b9}
+.restart{background:#d97706}
+.restart:hover{background:#b45309}
+#msg{margin-top:12px;font-weight:bold;min-height:20px}
+#ssidList{max-height:180px;overflow-y:auto;border:1px solid #ddd;border-radius:6px;background:#fafafa}
+.ssid-item{padding:8px 10px;border-bottom:1px solid #eee;cursor:pointer}
+.ssid-item:last-child{border-bottom:none}
+.ssid-item:hover{background:#e9f3ff}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>Configuración cámara</h2>
+
+  <div class="row">
+    <label for="ssid">SSID</label>
+    <input id="ssid" type="text">
+    <button type="button" onclick="searchSSIDs()">Buscar SSIDs</button>
+    <div id="ssidList" style="margin-top:8px;text-align:left;"></div>
+  </div>
+
+  <div class="row">
+    <label for="password">Contraseña</label>
+    <input id="password" type="password">
+    <button type="button" onclick="togglePassword()">Mostrar / ocultar</button>
+  </div>
+
+<button onclick="saveData()">Guardar</button>
+<button class="restart" onclick="restartCam()">Reiniciar</button>
+<div id="msg"></div>
+<div id="netinfo" style="margin-top:10px;color:#555;"></div>
+</div>
+
+<script>
+function setMsg(t,c='black'){
+  const e=document.getElementById('msg');
+  e.textContent=t;
+  e.style.color=c;
+}
+
+async function loadData(){
+  try{
+    const r=await fetch('/cam_config');
+    const d=await r.json();
+    document.getElementById('ssid').value=d.ssid||'';
+    document.getElementById('password').value=d.password||'';
+
+    const info = [];
+    info.push('STA: ' + (d.sta_ok ? 'conectado' : 'no conectado'));
+    if (d.sta_ip) info.push('IP STA: ' + d.sta_ip);
+    info.push('AP rescate: ' + (d.ap_ok ? 'activo' : 'inactivo'));
+    if (d.ap_ip) info.push('IP AP: ' + d.ap_ip);
+
+    const net = document.getElementById('netinfo');
+    if (net) net.innerHTML = info.join('<br>');
+  }catch(e){
+    setMsg('No se pudo leer la configuración','red');
+  }
+}
+
+async function saveData(){
+  const ssid=document.getElementById('ssid').value.trim();
+  const password=document.getElementById('password').value;
+
+  try{
+    const body=new URLSearchParams({ssid,password});
+    const r=await fetch('/save_cam_config',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body
+    });
+    if(!r.ok) throw new Error();
+    setMsg('Configuración guardada','green');
+  }catch(e){
+    setMsg('Error al guardar','red');
+  }
+}
+
+async function restartCam(){
+  if(!confirm('¿Reiniciar la cámara ahora?')) return;
+  setMsg('Reiniciando...','green');
+  try{
+    await fetch('/restart',{method:'POST'});
+  }catch(e){}
+}
+function togglePassword(){
+  const p=document.getElementById('password');
+  if(!p) return;
+  p.type = (p.type === 'password') ? 'text' : 'password';
+}
+
+async function searchSSIDs(){
+  const list=document.getElementById('ssidList');
+  if(list) list.innerHTML='';
+  setMsg('Buscando redes WiFi...','#b45309');
+
+  try{
+    const r=await fetch('/scan_ssids');
+    const data=await r.json();
+
+    if(!Array.isArray(data)){
+      setMsg('La respuesta no es una lista válida','red');
+      return;
+    }
+
+    if(data.length===0){
+      setMsg('No se encontraron redes','red');
+      return;
+    }
+
+    data.forEach(ssid=>{
+      const d=document.createElement('div');
+      d.className='ssid-item';
+      d.textContent=ssid;
+      d.onclick=()=>{
+        document.getElementById('ssid').value=ssid;
+        setMsg('SSID seleccionado: '+ssid,'green');
+      };
+      list.appendChild(d);
+    });
+
+    setMsg('Selecciona una red de la lista','green');
+  }catch(e){
+    setMsg('Error al buscar SSIDs','red');
+  }
+}
+loadData();
+</script>
+</body>
+</html>
+)rawliteral";
+
 static esp_err_t index_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
@@ -666,6 +826,101 @@ static esp_err_t index_handler(httpd_req_t *req) {
     log_e("Camera sensor not found");
     return httpd_resp_send_500(req);
   }
+}
+
+static esp_err_t setup_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html");
+  return httpd_resp_send(req, SETUP_HTML, strlen(SETUP_HTML));
+}
+
+static esp_err_t cam_config_handler(httpd_req_t *req) {
+  String json = "{";
+  json += "\"ssid\":\"";
+  json += wifi_ssid;
+  json += "\",\"password\":\"";
+  json += wifi_pass;
+  json += "\",\"sta_ok\":";
+  json += (wifi_sta_ok ? "true" : "false");
+  json += ",\"ap_ok\":";
+  json += (wifi_ap_ok ? "true" : "false");
+  json += ",\"sta_ip\":\"";
+  json += WiFi.localIP().toString();
+  json += "\",\"ap_ip\":\"";
+  json += WiFi.softAPIP().toString();
+  json += "\"}";
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, json.c_str(), json.length());
+}
+
+static esp_err_t save_cam_config_handler(httpd_req_t *req) {
+  int total_len = req->content_len;
+  if (total_len <= 0 || total_len > 256) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  char *buf = (char *)malloc(total_len + 1);
+  if (!buf) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  int received = 0;
+  while (received < total_len) {
+    int r = httpd_req_recv(req, buf + received, total_len - received);
+    if (r <= 0) {
+      free(buf);
+      httpd_resp_send_500(req);
+      return ESP_FAIL;
+    }
+    received += r;
+  }
+  buf[total_len] = '\0';
+
+  char ssid[64] = {0};
+  char password[96] = {0};
+
+  if (httpd_query_key_value(buf, "ssid", ssid, sizeof(ssid)) != ESP_OK) {
+    free(buf);
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  httpd_query_key_value(buf, "password", password, sizeof(password));
+  free(buf);
+
+  saveWiFiConfig(String(ssid), String(password));
+
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, "OK", 2);
+}
+
+static esp_err_t restart_handler(httpd_req_t *req) {
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, "Reiniciando", HTTPD_RESP_USE_STRLEN);
+  delay(300);
+  ESP.restart();
+  return ESP_OK;
+}
+
+static esp_err_t scan_ssids_handler(httpd_req_t *req) {
+  int n = WiFi.scanNetworks();
+  String json = "[";
+
+  for (int i = 0; i < n; i++) {
+    if (i > 0) json += ",";
+    json += "\"";
+    json += WiFi.SSID(i);
+    json += "\"";
+  }
+
+  json += "]";
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, json.c_str(), json.length());
 }
 
 void startCameraServer() {
@@ -817,6 +1072,71 @@ void startCameraServer() {
 
   ra_filter_init(&ra_filter, 20);
 
+  httpd_uri_t setup_uri = {
+    .uri = "/setup",
+    .method = HTTP_GET,
+    .handler = setup_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
+  httpd_uri_t cam_config_uri = {
+    .uri = "/cam_config",
+    .method = HTTP_GET,
+    .handler = cam_config_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
+  httpd_uri_t save_cam_config_uri = {
+    .uri = "/save_cam_config",
+    .method = HTTP_POST,
+    .handler = save_cam_config_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
+  httpd_uri_t restart_uri = {
+    .uri = "/restart",
+    .method = HTTP_POST,
+    .handler = restart_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
+  httpd_uri_t scan_ssids_uri = {
+    .uri = "/scan_ssids",
+    .method = HTTP_GET,
+    .handler = scan_ssids_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
   log_i("Starting web server on port: '%d'", config.server_port);
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
@@ -830,6 +1150,62 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &greg_uri);
     httpd_register_uri_handler(camera_httpd, &pll_uri);
     httpd_register_uri_handler(camera_httpd, &win_uri);
+    httpd_register_uri_handler(camera_httpd, &setup_uri);
+    httpd_register_uri_handler(camera_httpd, &cam_config_uri);
+    httpd_register_uri_handler(camera_httpd, &save_cam_config_uri);
+    httpd_register_uri_handler(camera_httpd, &restart_uri);    
+    httpd_register_uri_handler(camera_httpd, &scan_ssids_uri);
+  httpd_uri_t setup_uri = {
+    .uri = "/setup",
+    .method = HTTP_GET,
+    .handler = setup_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
+  httpd_uri_t cam_config_uri = {
+    .uri = "/cam_config",
+    .method = HTTP_GET,
+    .handler = cam_config_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
+  httpd_uri_t save_cam_config_uri = {
+    .uri = "/save_cam_config",
+    .method = HTTP_POST,
+    .handler = save_cam_config_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
+  httpd_uri_t restart_uri = {
+    .uri = "/restart",
+    .method = HTTP_POST,
+    .handler = restart_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };    
   }
 
   config.server_port += 1;

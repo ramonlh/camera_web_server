@@ -1,3 +1,5 @@
+
+#include <Preferences.h>
 #include "esp_camera.h"
 #include <WiFi.h>
 
@@ -11,8 +13,29 @@
 #define CAMERA_MODEL_AI_THINKER // Has PSRAM
 #include "camera_pins.h"
 
-const char *ssid = "ROVER_DIEGO";
-const char *password = "12341234";
+Preferences prefs;
+
+char wifi_ssid[33] = "ROVER_DIEGO";
+char wifi_pass[65] = "12341234";
+
+char ap_ssid[33] = "CAMARA_ROVER";
+char ap_pass[65] = "12341234";
+
+IPAddress sta_local_IP(192, 168, 4, 2);
+IPAddress sta_gateway(192, 168, 4, 1);
+IPAddress sta_subnet(255, 255, 255, 0);
+IPAddress sta_primaryDNS(8, 8, 8, 8);
+IPAddress sta_secondaryDNS(8, 8, 4, 4);
+
+IPAddress ap_local_IP(192, 168, 4, 1);
+IPAddress ap_gateway(192, 168, 4, 1);
+IPAddress ap_subnet(255, 255, 255, 0);
+
+bool wifi_sta_ok = false;
+bool wifi_ap_ok = false;
+
+void saveWiFiConfig(const String& s, const String& p);
+
 IPAddress local_IP(192, 168, 4, 2); // IP deseada (ajústala según tu red)
 IPAddress gateway(192, 168, 4, 1);    // Gateway (normalmente el router)
 IPAddress subnet(255, 255, 255, 0);   // Máscara de subred
@@ -21,6 +44,95 @@ IPAddress secondaryDNS(8, 8, 4, 4);   // DNS secundario (opcional)
 
 void startCameraServer();
 void setupLedFlash(int pin);
+
+void loadWiFiConfig() {
+  prefs.begin("camcfg", true);
+  String s = prefs.getString("ssid", "ROVER_DIEGO");
+  String p = prefs.getString("pass", "12341234");
+  prefs.end();
+
+  strlcpy(wifi_ssid, s.c_str(), sizeof(wifi_ssid));
+  strlcpy(wifi_pass, p.c_str(), sizeof(wifi_pass));
+}
+
+void saveWiFiConfig(const String& s, const String& p) {
+  prefs.begin("camcfg", false);
+  prefs.putString("ssid", s);
+  prefs.putString("pass", p);
+  prefs.end();
+
+  strlcpy(wifi_ssid, s.c_str(), sizeof(wifi_ssid));
+  strlcpy(wifi_pass, p.c_str(), sizeof(wifi_pass));
+}
+
+bool connectToSavedWiFi(uint32_t timeout_ms = 12000) {
+  Serial.println();
+  Serial.println("=== WIFI STA ===");
+  Serial.print("SSID guardado: ");
+  Serial.println(wifi_ssid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true, true);
+  delay(300);
+
+  if (!WiFi.config(sta_local_IP, sta_gateway, sta_subnet, sta_primaryDNS, sta_secondaryDNS)) {
+    Serial.println("No se pudo configurar IP estática STA");
+  }
+
+  WiFi.begin(wifi_ssid, wifi_pass);
+
+  uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - t0) < timeout_ms) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("WiFi STA conectado");
+    Serial.print("IP STA: ");
+    Serial.println(WiFi.localIP());
+    wifi_sta_ok = true;
+    return true;
+  }
+
+  Serial.println("No se pudo conectar en modo STA");
+  wifi_sta_ok = false;
+  return false;
+}
+
+void startRescueAP() {
+  Serial.println();
+  Serial.println("=== WIFI AP RESCATE ===");
+
+  WiFi.mode(WIFI_AP_STA);
+
+  if (!WiFi.softAPConfig(ap_local_IP, ap_gateway, ap_subnet)) {
+    Serial.println("No se pudo configurar IP del AP");
+  }
+
+  bool ok = WiFi.softAP(ap_ssid, ap_pass);
+
+  if (ok) {
+    Serial.println("AP de rescate activo");
+    Serial.print("SSID AP: ");
+    Serial.println(ap_ssid);
+    Serial.print("IP AP: ");
+    Serial.println(WiFi.softAPIP());
+    wifi_ap_ok = true;
+  } else {
+    Serial.println("No se pudo arrancar el AP de rescate");
+    wifi_ap_ok = false;
+  }
+}
+
+void startWiFiWithFallback() {
+  bool connected = connectToSavedWiFi();
+
+  if (!connected) {
+    startRescueAP();
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -90,7 +202,12 @@ void setup() {
     }
   else
     Serial.println("Camera OK");
+
   sensor_t *s = esp_camera_sensor_get();
+  if (!s) {
+    Serial.println("Error obteniendo sensor");
+    return;
+  }
   // initial sensors are flipped vertically and colors are a bit saturated
   if (s->id.PID == OV3660_PID) {
     s->set_vflip(s, 1);        // flip it back
@@ -99,7 +216,7 @@ void setup() {
   }
   // drop down frame size for higher initial frame rate
   if (config.pixel_format == PIXFORMAT_JPEG) {
-    s->set_framesize(s, FRAMESIZE_QVGA);
+    s->set_framesize(s, FRAMESIZE_VGA);
   }
 
 #if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
@@ -111,27 +228,32 @@ void setup() {
   s->set_vflip(s, 1);
 #endif
 
-// Setup LED FLash if LED pin is defined in camera_pins.h
-#if defined(LED_GPIO_NUM)
-  setupLedFlash(LED_GPIO_NUM);
-#endif
-  // Configurar IP estática antes de conectar
+  // Setup LED FLash if LED pin is defined in camera_pins.h
+  #if defined(LED_GPIO_NUM)
+    setupLedFlash(LED_GPIO_NUM);
+  #endif
+    // Configurar IP estática antes de conectar
   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
-    Serial.println("⚠️ Error al configurar la IP estática");
-    }
-  // esperar  10 segundos para asegurar que el AP del Rover se ponga en marcha
-  delay(10000);
-  WiFi.begin(ssid, password);
-  WiFi.setSleep(false);
-  Serial.print("WiFi connecting");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+    Serial.println("Error al configurar IP estática");
   }
-  Serial.println("");
-  Serial.println("WiFi connected");
+
+  WiFi.setSleep(false);
+
+  loadWiFiConfig();
+  startWiFiWithFallback();
 
   startCameraServer();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\nNo se pudo conectar al WiFi");
+    return;
+  }
+
+  Serial.println("\nWiFi connected");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+
+
 
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(WiFi.localIP());
