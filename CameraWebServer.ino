@@ -1,144 +1,170 @@
-
-#include <Preferences.h>
 #include "esp_camera.h"
 #include <WiFi.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 
-// WARNING!!! PSRAM IC required for UXGA resolution and high JPEG quality
-//            Ensure ESP32 Wrover Module or other board with PSRAM is selected
-//            Partial images will be transmitted if image exceeds buffer size
-//            You must select partition scheme from the board menu that has at least 3MB APP space.
-//            Face Recognition is DISABLED for ESP32 and ESP32-S2, because it takes up from 15
-//            seconds to process single frame. Face Detection is ENABLED if PSRAM is enabled as well
+// Basado en ESP32-CAM AI Thinker
+// Modo normal: STA fija hacia el rover
+// Modo rescate: AP propio solo si falla la conexión al rover
+// No se usa WIFI_AP_STA para evitar picos innecesarios al arrancar.
 
-#define CAMERA_MODEL_AI_THINKER // Has PSRAM
+#define CAMERA_MODEL_AI_THINKER
 #include "camera_pins.h"
 
-Preferences prefs;
-
+// --- Red fija del sistema rover + cámara ---
 char wifi_ssid[33] = "ROVER_DIEGO";
 char wifi_pass[65] = "12341234";
 
-char ap_ssid[33] = "CAMARA_ROVER";
-char ap_pass[65] = "12341234";
+// AP de rescate de la cámara (subred distinta a la del rover)
+static const char* RESCUE_AP_SSID = "CAMARA_RESCATE";
+static const char* RESCUE_AP_PASS = "12341234";
 
+// STA fija: la cámara siempre será 192.168.4.2 en la red del rover
 IPAddress sta_local_IP(192, 168, 4, 2);
 IPAddress sta_gateway(192, 168, 4, 1);
 IPAddress sta_subnet(255, 255, 255, 0);
 IPAddress sta_primaryDNS(8, 8, 8, 8);
 IPAddress sta_secondaryDNS(8, 8, 4, 4);
 
-IPAddress ap_local_IP(192, 168, 4, 1);
-IPAddress ap_gateway(192, 168, 4, 1);
+// AP de rescate: otra subred para no crear ambigüedad
+IPAddress ap_local_IP(192, 168, 8, 1);
+IPAddress ap_gateway(192, 168, 8, 1);
 IPAddress ap_subnet(255, 255, 255, 0);
 
 bool wifi_sta_ok = false;
 bool wifi_ap_ok = false;
-
-void saveWiFiConfig(const String& s, const String& p);
-
-IPAddress local_IP(192, 168, 4, 2); // IP deseada (ajústala según tu red)
-IPAddress gateway(192, 168, 4, 1);    // Gateway (normalmente el router)
-IPAddress subnet(255, 255, 255, 0);   // Máscara de subred
-IPAddress primaryDNS(8, 8, 8, 8);     // DNS primario (opcional)
-IPAddress secondaryDNS(8, 8, 4, 4);   // DNS secundario (opcional)
+unsigned long lastReconnectAttempt = 0;
+const unsigned long RECONNECT_INTERVAL_MS = 10000;
 
 void startCameraServer();
 void setupLedFlash(int pin);
 
-void loadWiFiConfig() {
-  prefs.begin("camcfg", true);
-  String s = prefs.getString("ssid", "ROVER_DIEGO");
-  String p = prefs.getString("pass", "12341234");
-  prefs.end();
-
-  strlcpy(wifi_ssid, s.c_str(), sizeof(wifi_ssid));
-  strlcpy(wifi_pass, p.c_str(), sizeof(wifi_pass));
-}
-
 void saveWiFiConfig(const String& s, const String& p) {
-  prefs.begin("camcfg", false);
-  prefs.putString("ssid", s);
-  prefs.putString("pass", p);
-  prefs.end();
-
-  strlcpy(wifi_ssid, s.c_str(), sizeof(wifi_ssid));
-  strlcpy(wifi_pass, p.c_str(), sizeof(wifi_pass));
+  Serial.println("La WiFi de la camara es fija y no admite cambios remotos.");
+  Serial.print("SSID solicitado e ignorado: ");
+  Serial.println(s);
 }
 
-bool connectToSavedWiFi(uint32_t timeout_ms = 12000) {
+bool connectToRoverWiFi(uint32_t timeout_ms = 12000) {
   Serial.println();
-  Serial.println("=== WIFI STA ===");
-  Serial.print("SSID guardado: ");
+  Serial.println("Conectando al rover por WiFi STA...");
+  Serial.print("SSID objetivo: ");
   Serial.println(wifi_ssid);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true, true);
-  delay(300);
+  wifi_sta_ok = false;
 
-  if (!WiFi.config(sta_local_IP, sta_gateway, sta_subnet, sta_primaryDNS, sta_secondaryDNS)) {
-    Serial.println("No se pudo configurar IP estática STA");
+  WiFi.persistent(false);
+  delay(200);
+
+  WiFi.disconnect(true, true);
+  delay(600);
+
+  WiFi.mode(WIFI_OFF);
+  delay(1000);
+
+  WiFi.mode(WIFI_STA);
+  delay(800);
+
+  WiFi.setSleep(false);
+  delay(200);
+
+  if (!WiFi.config(sta_local_IP, sta_gateway, sta_subnet,
+                   sta_primaryDNS, sta_secondaryDNS)) {
+    Serial.println("No se pudo configurar la IP fija STA");
   }
 
   WiFi.begin(wifi_ssid, wifi_pass);
 
   uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - t0) < timeout_ms) {
-    delay(500);
-    Serial.print(".");
+  wl_status_t last = WL_IDLE_STATUS;
+
+  while ((millis() - t0) < timeout_ms) {
+    wl_status_t st = WiFi.status();
+    if (st != last) {
+      Serial.printf("Estado WiFi -> %d\n", (int)st);
+      last = st;
+    }
+    if (st == WL_CONNECTED) {
+      break;
+    }
+    delay(250);
+    Serial.print('.');
   }
   Serial.println();
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("WiFi STA conectado");
+    wifi_sta_ok = true;
+    Serial.println("WiFi STA conectado al rover");
+    Serial.print("SSID asociado: ");
+    Serial.println(WiFi.SSID());
+    Serial.print("BSSID asociado: ");
+    Serial.println(WiFi.BSSIDstr());
     Serial.print("IP STA: ");
     Serial.println(WiFi.localIP());
-    wifi_sta_ok = true;
+    Serial.print("Gateway: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("RSSI: ");
+    Serial.println(WiFi.RSSI());
     return true;
   }
 
-  Serial.println("No se pudo conectar en modo STA");
-  wifi_sta_ok = false;
+  Serial.println("No se pudo conectar al rover por STA");
   return false;
 }
 
-void startRescueAP() {
+bool startRescueAP() {
   Serial.println();
-  Serial.println("=== WIFI AP RESCATE ===");
+  Serial.println("Activando AP de rescate...");
 
-  WiFi.mode(WIFI_AP_STA);
+  wifi_ap_ok = false;
+
+  WiFi.disconnect(true, true);
+  delay(600);
+
+  WiFi.mode(WIFI_OFF);
+  delay(1000);
+
+  WiFi.mode(WIFI_AP);
+  delay(800);
 
   if (!WiFi.softAPConfig(ap_local_IP, ap_gateway, ap_subnet)) {
-    Serial.println("No se pudo configurar IP del AP");
+    Serial.println("No se pudo configurar la IP del AP de rescate");
   }
 
-  bool ok = WiFi.softAP(ap_ssid, ap_pass);
-
-  if (ok) {
+  if (WiFi.softAP(RESCUE_AP_SSID, RESCUE_AP_PASS)) {
+    wifi_ap_ok = true;
     Serial.println("AP de rescate activo");
     Serial.print("SSID AP: ");
-    Serial.println(ap_ssid);
+    Serial.println(RESCUE_AP_SSID);
     Serial.print("IP AP: ");
     Serial.println(WiFi.softAPIP());
-    wifi_ap_ok = true;
-  } else {
-    Serial.println("No se pudo arrancar el AP de rescate");
-    wifi_ap_ok = false;
+    return true;
   }
+
+  Serial.println("No se pudo arrancar el AP de rescate");
+  return false;
 }
 
-void startWiFiWithFallback() {
-  bool connected = connectToSavedWiFi();
+void stopRescueAP() {
+  if (!wifi_ap_ok) return;
 
-  if (!connected) {
-    startRescueAP();
-  }
+  Serial.println("Desactivando AP de rescate...");
+  WiFi.softAPdisconnect(true);
+  delay(300);
+  wifi_ap_ok = false;
 }
 
 void setup() {
+  // Dejamos el brownout activo para detectar problemas reales.
+  // WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
   Serial.begin(115200);
   Serial.setDebugOutput(true);
-  Serial.println("Inicio");
-  
+  delay(500);
+
+  Serial.println();
+  Serial.println("Iniciando camara...");
+
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -159,30 +185,23 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 10000000;
-//  config.xclk_freq_hz = 20000000;
   config.frame_size = FRAMESIZE_VGA;
-//  config.frame_size = FRAMESIZE_UXGA;
-  config.pixel_format = PIXFORMAT_JPEG;  // for streaming
-  //config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
+  config.pixel_format = PIXFORMAT_JPEG;
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.jpeg_quality = 12;
   config.fb_count = 1;
 
-  // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
-  //                      for larger pre-allocated frame buffer.
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
       config.jpeg_quality = 10;
       config.fb_count = 2;
       config.grab_mode = CAMERA_GRAB_LATEST;
     } else {
-      // Limit the frame size when PSRAM is not available
       config.frame_size = FRAMESIZE_SVGA;
       config.fb_location = CAMERA_FB_IN_DRAM;
     }
   } else {
-    // Best option for face detection/recognition
     config.frame_size = FRAMESIZE_240X240;
 #if CONFIG_IDF_TARGET_ESP32S3
     config.fb_count = 2;
@@ -194,27 +213,25 @@ void setup() {
   pinMode(14, INPUT_PULLUP);
 #endif
 
-  // camera init
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x", err);
+    Serial.printf("Camera init failed with error 0x%x\n", err);
     return;
-    }
-  else
-    Serial.println("Camera OK");
+  }
+  Serial.println("Camera OK");
 
   sensor_t *s = esp_camera_sensor_get();
   if (!s) {
     Serial.println("Error obteniendo sensor");
     return;
   }
-  // initial sensors are flipped vertically and colors are a bit saturated
+
   if (s->id.PID == OV3660_PID) {
-    s->set_vflip(s, 1);        // flip it back
-    s->set_brightness(s, 1);   // up the brightness just a bit
-    s->set_saturation(s, -2);  // lower the saturation
+    s->set_vflip(s, 1);
+    s->set_brightness(s, 1);
+    s->set_saturation(s, -2);
   }
-  // drop down frame size for higher initial frame rate
+
   if (config.pixel_format == PIXFORMAT_JPEG) {
     s->set_framesize(s, FRAMESIZE_VGA);
   }
@@ -228,39 +245,61 @@ void setup() {
   s->set_vflip(s, 1);
 #endif
 
-  // Setup LED FLash if LED pin is defined in camera_pins.h
-  #if defined(LED_GPIO_NUM)
-    setupLedFlash(LED_GPIO_NUM);
-  #endif
-    // Configurar IP estática antes de conectar
-  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
-    Serial.println("Error al configurar IP estática");
+#if defined(LED_GPIO_NUM)
+  setupLedFlash(LED_GPIO_NUM);
+#endif
+
+  bool sta_ok = connectToRoverWiFi(15000);
+  if (!sta_ok) {
+    startRescueAP();
   }
-
-  WiFi.setSleep(false);
-
-  loadWiFiConfig();
-  startWiFiWithFallback();
 
   startCameraServer();
 
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nNo se pudo conectar al WiFi");
-    return;
+  if (wifi_sta_ok) {
+    Serial.print("Camara lista por STA en http://");
+    Serial.println(WiFi.localIP());
+  } else if (wifi_ap_ok) {
+    Serial.print("Camara en modo rescate en http://");
+    Serial.println(WiFi.softAPIP());
+  } else {
+    Serial.println("Camara iniciada, pero sin conectividad WiFi");
   }
 
-  Serial.println("\nWiFi connected");
-  Serial.print("IP: ");
-  Serial.println(WiFi.localIP());
-
-
-
-  Serial.print("Camera Ready! Use 'http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("' to connect");
+  lastReconnectAttempt = millis();
 }
 
 void loop() {
-  // Do nothing. Everything is done in another task by the web server
-  delay(1);
+  // Si la cámara estaba en rescate, intenta volver al rover periódicamente.
+  if (!wifi_sta_ok && (millis() - lastReconnectAttempt) >= RECONNECT_INTERVAL_MS) {
+    lastReconnectAttempt = millis();
+
+    Serial.println();
+    Serial.println("Reintentando conectar al rover...");
+
+    bool was_ap = wifi_ap_ok;
+    if (was_ap) {
+      stopRescueAP();
+      delay(300);
+    }
+
+    if (connectToRoverWiFi(8000)) {
+      Serial.print("Reconectada al rover. IP STA: ");
+      Serial.println(WiFi.localIP());
+      wifi_ap_ok = false;
+    } else {
+      if (was_ap || !wifi_ap_ok) {
+        startRescueAP();
+      }
+    }
+  }
+
+  if (wifi_sta_ok && WiFi.status() != WL_CONNECTED) {
+    Serial.println();
+    Serial.println("Se perdio la conexion STA con el rover");
+    wifi_sta_ok = false;
+    lastReconnectAttempt = 0;
+  }
+
+  delay(50);
 }

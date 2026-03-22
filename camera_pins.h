@@ -37,7 +37,7 @@
 #define HREF_GPIO_NUM  27
 #define PCLK_GPIO_NUM  25
 
-#define LED_GPIO_NUM 22
+#define LED_GPIO_NUM 4  // 22
 
 #elif defined(CAMERA_MODEL_M5STACK_PSRAM)
 #define PWDN_GPIO_NUM  -1
