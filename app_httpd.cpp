@@ -1,4 +1,6 @@
 
+
+
 // Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -225,7 +227,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   esp_err_t res = ESP_OK;
   size_t _jpg_buf_len = 0;
   uint8_t *_jpg_buf = NULL;
-  char *part_buf[128];
+  char part_buf[128];
 
   static int64_t last_frame = 0;
   if (!last_frame) {
@@ -426,7 +428,7 @@ static int print_reg(char *p, sensor_t *s, uint16_t reg, uint32_t mask) {
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
-  static char json_response[1024];
+  static char json_response[2048];
 
   sensor_t *s = esp_camera_sensor_get();
   char *p = json_response;
@@ -680,7 +682,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
 
 void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.max_uri_handlers = 10;
+  config.max_uri_handlers = 12;
 
   httpd_uri_t index_uri = {
     .uri = "/",
@@ -762,7 +764,11 @@ void startCameraServer() {
   ra_filter_init(&ra_filter, 20);
 
   log_i("Starting web server on port: '%d'", config.server_port);
-  if (httpd_start(&camera_httpd, &config) == ESP_OK) {
+  esp_err_t err_web = httpd_start(&camera_httpd, &config);
+  Serial.printf("[HTTP] Intentando abrir servidor web en puerto %d\n", config.server_port);
+  if (err_web == ESP_OK) {
+    Serial.printf("[HTTP] Servidor web ABIERTO en puerto %d\n", config.server_port);
+    Serial.printf("[HTTP] Registrando rutas en web: /  /control  /status  /capture ...\n");
     httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &cmd_uri);
     httpd_register_uri_handler(camera_httpd, &status_uri);
@@ -773,13 +779,21 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &greg_uri);
     httpd_register_uri_handler(camera_httpd, &pll_uri);
     httpd_register_uri_handler(camera_httpd, &win_uri);
+  } else {
+    Serial.printf("[HTTP] ERROR abriendo servidor web en puerto %d -> 0x%x\n", config.server_port, (unsigned)err_web);
   }
 
   config.server_port += 1;
   config.ctrl_port += 1;
   log_i("Starting stream server on port: '%d'", config.server_port);
-  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
+  esp_err_t err_stream = httpd_start(&stream_httpd, &config);
+  Serial.printf("[HTTP] Intentando abrir servidor stream en puerto %d\n", config.server_port);
+  if (err_stream == ESP_OK) {
+    Serial.printf("[HTTP] Servidor stream ABIERTO en puerto %d\n", config.server_port);
+    Serial.printf("[HTTP] Registrando ruta de stream: /stream\n");
     httpd_register_uri_handler(stream_httpd, &stream_uri);
+  } else {
+    Serial.printf("[HTTP] ERROR abriendo servidor stream en puerto %d -> 0x%x\n", config.server_port, (unsigned)err_stream);
   }
 }
 
